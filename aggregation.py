@@ -110,7 +110,7 @@ def parse_complexity(file_path):
     for filename, elements in data.items():
         is_test_file = "/tests/" in filename
 
-        # Ensure elements is a list of dictionaries
+  
         if isinstance(elements, list):
             for element in elements:
                 if isinstance(element, dict) and "type" in element and "complexity" in element:
@@ -173,7 +173,6 @@ def main():
 
         all_data[inner_folder] = folder_data
 
-    # Dynamically generate fieldnames for the CSV
     fieldnames = set()
     for folder_data in all_data.values():
         fieldnames.update(folder_data.keys())
