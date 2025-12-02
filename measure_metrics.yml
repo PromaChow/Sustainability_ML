@@ -1,8 +1,7 @@
-name: measure_metrics.yml
+name: analytics
 on:
   push:
-    branches:
-      - main
+    branches: [ master ]
 
 jobs:
   analyze:
@@ -14,18 +13,22 @@ jobs:
         with:
           json-output: true
           task: start-measurement
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.x
+          python-version: '3.x'
+
       - name: Install dependencies
-        run: "python -m pip install --upgrade pip
-          pip install radon lizard pylint mccabe xenon pycodestyle cognitive-complexity
-          cloc scc
-          "
+        run: |
+          python -m pip install --upgrade pip
+          pip install radon lizard pylint mccabe xenon pycodestyle cognitive-complexity jq
+          # cloc/scc are optional and not needed for radon; comment in if you really need them:
+          # sudo apt-get update && sudo apt-get install -y cloc
+          # curl -sSL https://github.com/boyter/scc/releases/latest/download/linux_amd64.zip -L -o /tmp/scc.zip && sudo unzip -j /tmp/scc.zip -d /usr/local/bin scc && sudo chmod +x /usr/local/bin/scc
       - id: measurement-4
         name: Record Measurement After Install dependencies
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
@@ -33,87 +36,128 @@ jobs:
           json-output: true
           label: Install dependencies
           task: get-measurement
-      - name: Analyze with Radon
-        run: 'echo "=== Cyclomatic Complexity ===" > metrics_report.txt
-          radon cc . --show-complexity --average >> metrics_report.txt
-          echo -e "\n=== Maintainability Index ===" >> metrics_report.txt
-          radon mi . --show >> metrics_report.txt
-          echo -e "\n=== Raw Metrics ===" >> metrics_report.txt
-          radon raw . --summary >> metrics_report.txt
-          echo -e "\n=== Halstead Metrics ===" >> metrics_report.txt
-          radon hal . >> metrics_report.txt
-          '
+
+      - name: Check Python Files
+        run: |
+          echo "Found Python files:"
+          find . -path ./.git -prune -o -path "*/.venv" -prune -o -path "*/venv" -prune -o -name "*.py" -print
       - id: measurement-6
+        name: Record Measurement After Check Python Files
+        uses: green-coding-solutions/eco-ci-energy-estimation@v4
+        with:
+          json-output: true
+          label: Check Python Files
+          task: get-measurement
+
+      - name: Analyze with Radon (text reports)
+        run: |
+          mkdir -p metrics
+          EXCLUDES="--exclude .git,**/.venv/**,**/venv/**,**/site-packages/**"
+          echo "=== Cyclomatic Complexity ===" > metrics_report.txt
+          radon cc --show-complexity --average $EXCLUDES . >> metrics_report.txt || true
+          echo -e "\n=== Maintainability Index ===" >> metrics_report.txt
+          radon mi --show $EXCLUDES . >> metrics_report.txt || true
+          echo -e "\n=== Raw Metrics ===" >> metrics_report.txt
+          radon raw --summary $EXCLUDES . >> metrics_report.txt || true
+          echo -e "\n=== Halstead Metrics ===" >> metrics_report.txt
+          radon hal $EXCLUDES . >> metrics_report.txt || true
+      - id: measurement-8
         name: Record Measurement After Analyze with Radon
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
           label: Analyze with Radon
           task: get-measurement
-      - name: Analyze with Lizard
-        run: 'echo -e "\n=== Detailed Code Metrics ===" >> metrics_report.txt
-          lizard . --CCN 10 --length 100 --arguments 5 --extension duplicate --modified --working_threads 1 || true >> metrics_report.txt
-          '
-      - id: measurement-8
-        name: Record Measurement After Analyze with Lizard
+
+      - name: Run Lizard Analysis
+        run: |
+          echo -e "\n=== Detailed Code Metrics ===" >> metrics_report.txt
+          lizard . --CCN 10 --length 100 --arguments 5 --modified --working_threads 1 >> metrics_report.txt || true
+      - id: measurement-10
+        name: Record Measurement After Run Lizard Analysis
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
-          label: Analyze with Lizard
+          label: Run Lizard Analysis
           task: get-measurement
+
       - name: Analyze with Pylint
-        run: 'echo -e "\n=== Code Quality Metrics ===" >> metrics_report.txt
-          pylint --output-format=text . || true >> metrics_report.txt
-          '
-      - id: measurement-10
+        run: |
+          echo -e "\n=== Code Quality Metrics ===" >> metrics_report.txt
+          # Run pylint on tracked Python files; fall back to recursive if none
+          files="$(git ls-files '*.py' || true)"
+          if [ -n "$files" ]; then
+            pylint --output-format=text $files >> metrics_report.txt || true
+          else
+            pylint --output-format=text . >> metrics_report.txt || true
+          fi
+      - id: measurement-12
         name: Record Measurement After Analyze with Pylint
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
           label: Analyze with Pylint
           task: get-measurement
+
       - name: Check complexity thresholds with Xenon
-        run: 'echo -e "\n=== Complexity Thresholds ===" >> metrics_report.txt
-          xenon --max-absolute A --max-modules A --max-average A . || true >> metrics_report.txt
-          '
-      - id: measurement-12
+        run: |
+          echo -e "\n=== Complexity Thresholds ===" >> metrics_report.txt
+          xenon --max-absolute A --max-modules A --max-average A . >> metrics_report.txt || true
+      - id: measurement-14
         name: Record Measurement After Check complexity thresholds with Xenon
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
           label: Check complexity thresholds with Xenon
           task: get-measurement
-      - name: Generate detailed reports
-        run: "mkdir -p metrics
-          # JSON reports
-          radon cc . --json > metrics/complexity.json
-          radon raw . --json > metrics/raw_metrics.json
-          radon hal . --json > metrics/halstead.json
-          lizard . --xml > metrics/lizard_report.xml
+
+      - name: Generate detailed JSON/XML reports
+        run: |
+          EXCLUDES="--exclude .git,**/.venv/**,**/venv/**,**/site-packages/**"
+          # Radon JSON (pass a path!)
+          radon cc  -j $EXCLUDES . > metrics/complexity.json || true
+          radon raw -j $EXCLUDES . > metrics/raw_metrics.json || true
+          radon hal -j $EXCLUDES . > metrics/halstead.json   || true
+          # Lizard XML
+          lizard . --xml > metrics/lizard_report.xml || true
+          # Copy full human-readable report
           cp metrics_report.txt metrics/full_report.txt
-          "
-      - id: measurement-14
+      - id: measurement-16
         name: Record Measurement After Generate detailed reports
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
           label: Generate detailed reports
           task: get-measurement
+
       - name: Upload metrics results
         uses: actions/upload-artifact@v4
         with:
           name: code-metrics
           path: metrics/
+
       - id: display-measurement
         name: Display Energy Results
         uses: green-coding-solutions/eco-ci-energy-estimation@v4
         with:
           json-output: true
           task: display-results
+
       - name: Save Total Energy Consumption Data
-        run: echo '${{ steps.final-measurement.outputs.data-total-json }}' > total_energy_consumption.json
+        run: echo '${{ steps.display-measurement.outputs.data-total-json }}' > total_energy_consumption.json
+
+      - name: Convert Energy JSON to CSV
+        run: |
+          if [ -s total_energy_consumption.json ]; then
+            jq -r '(.[0] | keys_unsorted) as $keys | $keys, map([.[ $keys[] ]])[] | @csv' total_energy_consumption.json > eco_results.csv
+          else
+            echo "No JSON output found, skipping conversion."
+          fi
+
       - name: Upload Energy Consumption Artifact
         uses: actions/upload-artifact@v4
         with:
           name: total-energy-consumption
-          path: total_energy_consumption.json
+          path: |
+            total_energy_consumption.json
+            eco_results.csv
